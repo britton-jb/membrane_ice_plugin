@@ -158,6 +158,12 @@ defmodule Membrane.ICE.Endpoint do
                 `TURNManager.get_launched_turn_servers/0` (e.g.
                 `Membrane.RTC.Engine.Endpoint.WebRTC`) see them in their
                 offer-data and emit them as ICE candidates in the SDP.
+
+                For pass-through wrappers that don't expose this option
+                on their composite endpoint, you may also set
+                `protocols: [...]` inside `integrated_turn_options`. The
+                inner map takes precedence; the endpoint-level default
+                stays `[:udp]`.
                 """
               ],
               telemetry_label: [
@@ -196,6 +202,17 @@ defmodule Membrane.ICE.Endpoint do
     for event_name <- @emitted_events do
       TelemetryMetrics.register(event_name, telemetry_label)
     end
+
+    # Pass-through wrappers (e.g. membrane_rtc_engine_webrtc's WebRTC
+    # endpoint) don't expose `:protocols` on their composite — they
+    # only thread `:integrated_turn_options` through to us. Honour
+    # `protocols:` if it appears inside that map so consumers can opt
+    # into TLS/TCP without needing a parallel fork upstream.
+    protocols =
+      case integrated_turn_options[:protocols] do
+        nil -> protocols
+        from_turn_options when is_list(from_turn_options) -> from_turn_options
+      end
 
     state = %{
       id: to_string(Enum.map(1..10, fn _i -> Enum.random(?a..?z) end)),

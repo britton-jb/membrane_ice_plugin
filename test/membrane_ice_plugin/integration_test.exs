@@ -145,6 +145,35 @@ defmodule Membrane.ICE.IntegrationTest do
       Testing.Pipeline.terminate(pipeline)
     end
 
+    test "`protocols:` inside `integrated_turn_options` is honoured (pass-through path)" do
+      # Composite wrappers like membrane_rtc_engine_webrtc don't surface
+      # the endpoint-level :protocols opt — they only forward
+      # :integrated_turn_options. Stuffing protocols inside that map is
+      # the supported escape hatch.
+      pipeline =
+        Testing.Pipeline.start_link_supervised!(
+          module: Membrane.ICE.Support.TestPipeline,
+          custom_args: [
+            dtls?: false,
+            integrated_turn_options: [
+              ip: {127, 0, 0, 1},
+              protocols: [:udp, :tcp]
+            ]
+          ]
+        )
+
+      assert_pipeline_notified(pipeline, :ice, {:udp_integrated_turn, _turn})
+      Process.sleep(100)
+
+      relay_types =
+        Membrane.ICE.TURNManager.get_launched_turn_servers()
+        |> Enum.map(& &1.relay_type)
+        |> Enum.sort()
+
+      assert :tcp in relay_types
+      Testing.Pipeline.terminate(pipeline)
+    end
+
     test ":tls without a :cert_file: TURNManager.ensure_tls_turn_launched/2 surfaces an error" do
       # This is the contract the endpoint guards on: when callers pass
       # `protocols: [..., :tls, ...]` without a `:cert_file`, the endpoint
