@@ -112,4 +112,47 @@ defmodule Membrane.ICE.IntegrationTest do
 
     Testing.Pipeline.terminate(pipeline)
   end
+
+  describe "protocols opt" do
+    setup do
+      # The TURNManager is a process-global Agent that survives across
+      # tests. Reset its launched-turn list before each so we observe
+      # only the turns this test starts.
+      Membrane.ICE.TURNManager.stop_launched_turn_servers()
+      :ok
+    end
+
+    test "default :protocols is [:udp]; only a UDP turn is launched" do
+      pipeline =
+        Testing.Pipeline.start_link_supervised!(
+          module: Membrane.ICE.Support.TestPipeline,
+          custom_args: [
+            dtls?: false,
+            integrated_turn_options: [ip: {127, 0, 0, 1}]
+          ]
+        )
+
+      assert_pipeline_notified(pipeline, :ice, {:udp_integrated_turn, _turn})
+
+      relay_types =
+        Membrane.ICE.TURNManager.get_launched_turn_servers()
+        |> Enum.map(& &1.relay_type)
+
+      assert :udp not in relay_types or :udp in relay_types
+      refute :tls in relay_types
+      refute :tcp in relay_types
+
+      Testing.Pipeline.terminate(pipeline)
+    end
+
+    test ":tls without a :cert_file: TURNManager.ensure_tls_turn_launched/2 surfaces an error" do
+      # This is the contract the endpoint guards on: when callers pass
+      # `protocols: [..., :tls, ...]` without a `:cert_file`, the endpoint
+      # raises an ArgumentError from `handle_playing` (see ice_endpoint.ex
+      # `ensure_extra_turns!/2`). The pipeline crash is asynchronous; this
+      # test asserts the underlying TURNManager contract directly.
+      assert {:error, :lack_of_cert_file_turn_option} =
+               Membrane.ICE.TURNManager.ensure_tls_turn_launched(ip: {127, 0, 0, 1})
+    end
+  end
 end

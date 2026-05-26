@@ -142,6 +142,24 @@ defmodule Membrane.ICE.Endpoint do
                 spec: [integrated_turn_options_t()],
                 description: "Integrated TURN Options"
               ],
+              protocols: [
+                spec: [:udp | :tcp | :tls],
+                default: [:udp],
+                description: """
+                Transport protocols to listen on for the integrated TURN
+                server. `:udp` is always started for the host/srflx
+                candidates needed by ICE. Add `:tcp` to expose a TCP
+                relay, or `:tls` to expose a TURN-over-TLS relay (the
+                latter requires `:cert_file` in `integrated_turn_options`
+                so the TLS listener has a certificate).
+
+                Extras (`:tcp` / `:tls`) are launched via the global
+                `Membrane.ICE.TURNManager` Agent so consumers reading
+                `TURNManager.get_launched_turn_servers/0` (e.g.
+                `Membrane.RTC.Engine.Endpoint.WebRTC`) see them in their
+                offer-data and emit them as ICE candidates in the SDP.
+                """
+              ],
               telemetry_label: [
                 spec: TelemetryMetrics.label(),
                 default: [],
@@ -169,6 +187,7 @@ defmodule Membrane.ICE.Endpoint do
   def handle_init(_context, options) do
     %__MODULE__{
       integrated_turn_options: integrated_turn_options,
+      protocols: protocols,
       dtls?: dtls?,
       handshake_opts: hsk_opts,
       telemetry_label: telemetry_label
@@ -182,6 +201,7 @@ defmodule Membrane.ICE.Endpoint do
       id: to_string(Enum.map(1..10, fn _i -> Enum.random(?a..?z) end)),
       turn_allocs: %{},
       integrated_turn_options: integrated_turn_options,
+      protocols: protocols,
       fake_candidate_ip: integrated_turn_options[:mock_ip] || integrated_turn_options[:ip],
       selected_alloc: nil,
       dtls?: dtls?,
@@ -218,6 +238,8 @@ defmodule Membrane.ICE.Endpoint do
         Membrane.ResourceGuard.register(ctx.resource_guard, fn ->
           Membrane.ICE.Utils.stop_integrated_turn(udp_integrated_turn)
         end)
+
+        ensure_extra_turns!(state.protocols, state.integrated_turn_options)
 
         state =
           Map.merge(state, %{
@@ -265,6 +287,8 @@ defmodule Membrane.ICE.Endpoint do
         Membrane.ResourceGuard.register(ctx.resource_guard, fn ->
           Membrane.ICE.Utils.stop_integrated_turn(udp_integrated_turn)
         end)
+
+        ensure_extra_turns!(state.protocols, state.integrated_turn_options)
 
         state =
           Map.merge(state, %{
@@ -802,5 +826,39 @@ defmodule Membrane.ICE.Endpoint do
     end
 
     send(alloc_pid, {:send_ice_payload, payload})
+  end
+
+  # Ensure the global `TURNManager` Agent has a turn launched for each
+  # protocol the caller asked for beyond the always-on `:udp`. The
+  # Agent caches by `relay_type`, so repeat callers across endpoints
+  # don't double-launch. TLS requires `:cert_file` in
+  # `integrated_turn_options`; we surface that as a hard error rather
+  # than silently dropping TLS support.
+  defp ensure_extra_turns!(protocols, integrated_turn_options) do
+    for protocol <- protocols, protocol != :udp do
+      case protocol do
+        :tcp ->
+          :ok = Membrane.ICE.TURNManager.ensure_tcp_turn_launched(integrated_turn_options)
+
+        :tls ->
+          case Membrane.ICE.TURNManager.ensure_tls_turn_launched(integrated_turn_options) do
+            :ok ->
+              :ok
+
+            {:error, :lack_of_cert_file_turn_option} ->
+              raise ArgumentError, """
+              ICE.Endpoint was started with `protocols: [..., :tls, ...]` but
+              `integrated_turn_options` is missing `:cert_file`. The TLS
+              listener cannot be started without a certificate.
+
+              Add `cert_file: "/path/to/fullchain.pem"` (and the key inside
+              the same file, or co-located) to the `integrated_turn_options`
+              you pass to `ICE.Endpoint`.
+              """
+          end
+      end
+    end
+
+    :ok
   end
 end
